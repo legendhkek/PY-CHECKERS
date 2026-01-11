@@ -1,18 +1,1 @@
-make all this site checker do anything to make account checker of all these site instructions must able to check 10 account at a same time first try request base if not work then make playwright base but headless do anything to solve captcha  it dont ask for external api service make it faster and must be working you can even do anything but dont simualte but make in any language but make it
-Ups.com
 
-Dhl.com
-
-Royalmail.com
-
-Everymail.com
-
-Savastan0.tools
-unitedshop.su
-blstash.ws 
-easydeals.gs
-http://sky.com
-
-Meetic.fr
-
-https://shop.azyrah.to/auth/signin
