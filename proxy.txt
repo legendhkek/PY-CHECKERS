@@ -1,1 +1,1 @@
-202.28.17.8:8080:s6003026810028:1720800122226
+ngu.proxy.arealproxy.com:8080:652BthZDvxP7ozf:QDcj9tzf4gVaGNZ
