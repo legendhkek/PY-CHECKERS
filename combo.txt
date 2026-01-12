@@ -1,0 +1,10 @@
+test1@gmail.com:Password123
+test2@yahoo.com:MyPass456
+test3@outlook.com:Secret789
+test4@hotmail.com:Test1234
+test5@gmail.com:Pass5678
+test6@yahoo.com:Hello999
+test7@outlook.com:World111
+test8@gmail.com:Access222
+test9@hotmail.com:Login333
+test10@yahoo.com:Check444
