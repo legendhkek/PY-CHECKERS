@@ -6,6 +6,7 @@ colorama>=0.4.6
 user_agent>=0.1.10
 cloudscraper>=1.2.71
 curl_cffi>=0.5.10
+tls_client>=1.0.0
 
 # Optional: For SOCKS proxy support
 # pip install requests[socks]
