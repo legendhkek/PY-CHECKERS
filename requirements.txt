@@ -1,8 +1,10 @@
 # Account Checker Requirements
-# Install with: pip install -r requirements.txt
+# Code By - @LEGEND_BL
 
 requests>=2.31.0
 colorama>=0.4.6
-user-agent>=0.1.10
-PySocks>=1.7.1
-urllib3>=2.1.0
+user_agent>=0.1.10
+
+# Optional: For SOCKS proxy support
+# pip install requests[socks]
+# PySocks>=1.7.1

